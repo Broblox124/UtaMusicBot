@@ -3,8 +3,10 @@ const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerSta
 const ytdl = require('ytdl-core');
 const yts = require('yt-search');
 
-// Simple queue system
-const queues = new Map();
+// Global queue storage
+if (!global.musicQueues) {
+    global.musicQueues = new Map();
+}
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -50,7 +52,7 @@ module.exports = {
                     
                     if (!searchResult || !searchResult.videos || searchResult.videos.length === 0) {
                         return await interaction.editReply({
-                            content: `❌ No results found for "${query}". Try different keywords!`
+                            content: `❌ No results found for "${query}". Try different keywords or a YouTube URL!`
                         });
                     }
                     
@@ -66,9 +68,8 @@ module.exports = {
                 const thumbnail = videoDetails.thumbnails[0]?.url;
                 
                 // Get or create queue
-                let queue = queues.get(guildId);
+                let queue = global.musicQueues.get(guildId);
                 if (!queue) {
-                    // Join voice channel
                     const connection = joinVoiceChannel({
                         channelId: voiceChannel.id,
                         guildId: interaction.guild.id,
@@ -87,12 +88,11 @@ module.exports = {
                         textChannel: interaction.channel
                     };
                     
-                    queues.set(guildId, queue);
+                    global.musicQueues.set(guildId, queue);
                     
-                    // Player events
                     player.on(AudioPlayerStatus.Idle, () => {
                         if (queue.songs.length > 0) {
-                            playNextSong(queue, guildId);
+                            playNextSong(queue);
                         } else {
                             queue.isPlaying = false;
                             queue.currentSong = null;
@@ -100,19 +100,17 @@ module.exports = {
                     });
                     
                     connection.on(VoiceConnectionStatus.Disconnected, () => {
-                        queues.delete(guildId);
+                        global.musicQueues.delete(guildId);
                     });
                 }
                 
-                // Add song to queue
                 const song = { title, author, duration, thumbnail, url: videoUrl, requester: interaction.user };
                 queue.songs.push(song);
                 
                 if (!queue.isPlaying) {
-                    playNextSong(queue, guildId);
+                    playNextSong(queue);
                 }
                 
-                // Create buttons
                 const row = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
@@ -129,12 +127,7 @@ module.exports = {
                             .setCustomId('stop')
                             .setEmoji('⏹️')
                             .setLabel('Stop')
-                            .setStyle(ButtonStyle.Danger),
-                        new ButtonBuilder()
-                            .setCustomId('queue_view')
-                            .setEmoji('📋')
-                            .setLabel('Queue')
-                            .setStyle(ButtonStyle.Secondary)
+                            .setStyle(ButtonStyle.Danger)
                     );
                 
                 const embed = new EmbedBuilder()
@@ -145,7 +138,7 @@ module.exports = {
                     .addFields([
                         { name: '⏱️ Duration', value: duration, inline: true },
                         { name: '🎧 Requested by', value: interaction.user.toString(), inline: true },
-                        { name: '📋 Position in Queue', value: `${queue.songs.length}`, inline: true }
+                        { name: '📋 Position', value: `${queue.songs.length}`, inline: true }
                     ])
                     .setFooter({ text: 'VibyMusic • Simple & Reliable ✨' })
                     .setTimestamp();
@@ -168,8 +161,7 @@ module.exports = {
     }
 };
 
-// Helper function to play next song
-async function playNextSong(queue, guildId) {
+function playNextSong(queue) {
     if (queue.songs.length === 0) {
         queue.isPlaying = false;
         queue.currentSong = null;
@@ -190,25 +182,10 @@ async function playNextSong(queue, guildId) {
         queue.player.play(resource);
         console.log(`🎵 Now playing: ${song.title}`.cyan);
         
-        // Send now playing message
-        if (queue.textChannel) {
-            const embed = new EmbedBuilder()
-                .setTitle('🎵 Now Playing')
-                .setDescription(`**[${song.title}](${song.url})**\n🎤 ${song.author}`)
-                .setColor('#FF69B4')
-                .setThumbnail(song.thumbnail)
-                .setFooter({ text: `Requested by ${song.requester.username}` });
-            
-            queue.textChannel.send({ embeds: [embed] }).catch(() => {});
-        }
-        
     } catch (error) {
         console.error('Error playing song:', error);
         if (queue.songs.length > 0) {
-            playNextSong(queue, guildId);
+            playNextSong(queue);
         }
     }
 }
-
-// Export the queues map for other commands
-module.exports.queues = queues;
