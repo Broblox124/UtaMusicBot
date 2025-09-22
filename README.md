@@ -1,2 +1,2 @@
 # UtaMusicBot
-Cute &amp; smooth music bit
+Cute &amp; smooth music bot
