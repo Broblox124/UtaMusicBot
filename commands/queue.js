@@ -1,5 +1,4 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { queues } = require('./play.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -7,7 +6,7 @@ module.exports = {
         .setDescription('📋 Show the current music queue'),
         
     async execute(interaction) {
-        const queue = queues.get(interaction.guild.id);
+        const queue = global.musicQueues?.get(interaction.guild.id);
         
         if (!queue || (!queue.currentSong && queue.songs.length === 0)) {
             return interaction.reply({ content: '📭 The queue is empty!', ephemeral: true });
