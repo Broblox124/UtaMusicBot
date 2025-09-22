@@ -1,7 +1,10 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 const ytdl = require('ytdl-core');
 const yts = require('yt-search');
+
+// Simple queue system
+const queues = new Map();
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -15,13 +18,12 @@ module.exports = {
         
     async execute(interaction) {
         try {
-            // IMMEDIATELY defer to prevent timeout
             await interaction.deferReply();
             
             const query = interaction.options.getString('song');
             const voiceChannel = interaction.member?.voice?.channel;
+            const guildId = interaction.guild.id;
             
-            // Quick validation
             if (!voiceChannel) {
                 return await interaction.editReply({
                     content: '🎧 You need to be in a voice channel to play music!'
@@ -37,30 +39,24 @@ module.exports = {
             
             try {
                 let videoInfo;
-                let searchResult;
+                let videoUrl;
                 
-                // Check if it's already a YouTube URL
                 if (ytdl.validateURL(query)) {
-                    console.log('Direct YouTube URL provided');
                     videoInfo = await ytdl.getBasicInfo(query);
+                    videoUrl = query;
                 } else {
-                    console.log(`🔍 Searching YouTube for: "${query}"`);
-                    
-                    // Search YouTube directly
-                    searchResult = await yts(query);
+                    console.log(`🔍 Searching for: "${query}"`);
+                    const searchResult = await yts(query);
                     
                     if (!searchResult || !searchResult.videos || searchResult.videos.length === 0) {
                         return await interaction.editReply({
-                            content: `❌ No results found for "${query}". Try:\n\n✅ **Different keywords**\n✅ **Add artist name**\n✅ **Use a YouTube URL directly**\n✅ **Try popular songs like "bohemian rhapsody" or "imagine dragons"**`
+                            content: `❌ No results found for "${query}". Try different keywords!`
                         });
                     }
                     
-                    // Get the first video from search results
                     const firstVideo = searchResult.videos[0];
-                    console.log(`✅ Found: ${firstVideo.title} by ${firstVideo.author.name}`);
-                    
-                    // Get detailed info for the first result
                     videoInfo = await ytdl.getBasicInfo(firstVideo.url);
+                    videoUrl = firstVideo.url;
                 }
                 
                 const videoDetails = videoInfo.videoDetails;
@@ -68,100 +64,151 @@ module.exports = {
                 const author = videoDetails.author.name;
                 const duration = new Date(parseInt(videoDetails.lengthSeconds) * 1000).toISOString().substr(11, 8);
                 const thumbnail = videoDetails.thumbnails[0]?.url;
-                const videoUrl = videoDetails.video_url;
                 
-                // Join voice channel
-                const connection = joinVoiceChannel({
-                    channelId: voiceChannel.id,
-                    guildId: interaction.guild.id,
-                    adapterCreator: interaction.guild.voiceAdapterCreator,
-                });
+                // Get or create queue
+                let queue = queues.get(guildId);
+                if (!queue) {
+                    // Join voice channel
+                    const connection = joinVoiceChannel({
+                        channelId: voiceChannel.id,
+                        guildId: interaction.guild.id,
+                        adapterCreator: interaction.guild.voiceAdapterCreator,
+                    });
+                    
+                    const player = createAudioPlayer();
+                    connection.subscribe(player);
+                    
+                    queue = {
+                        connection,
+                        player,
+                        songs: [],
+                        isPlaying: false,
+                        currentSong: null,
+                        textChannel: interaction.channel
+                    };
+                    
+                    queues.set(guildId, queue);
+                    
+                    // Player events
+                    player.on(AudioPlayerStatus.Idle, () => {
+                        if (queue.songs.length > 0) {
+                            playNextSong(queue, guildId);
+                        } else {
+                            queue.isPlaying = false;
+                            queue.currentSong = null;
+                        }
+                    });
+                    
+                    connection.on(VoiceConnectionStatus.Disconnected, () => {
+                        queues.delete(guildId);
+                    });
+                }
                 
-                // Create audio player
-                const player = createAudioPlayer();
+                // Add song to queue
+                const song = { title, author, duration, thumbnail, url: videoUrl, requester: interaction.user };
+                queue.songs.push(song);
                 
-                // Create audio resource
-                const resource = createAudioResource(ytdl(videoUrl, {
-                    filter: 'audioonly',
-                    quality: 'highestaudio',
-                    highWaterMark: 1 << 25
-                }));
+                if (!queue.isPlaying) {
+                    playNextSong(queue, guildId);
+                }
                 
-                // Play the audio
-                player.play(resource);
-                connection.subscribe(player);
+                // Create buttons
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('pause_resume')
+                            .setEmoji('⏸️')
+                            .setLabel('Pause')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId('skip')
+                            .setEmoji('⏭️')
+                            .setLabel('Skip')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId('stop')
+                            .setEmoji('⏹️')
+                            .setLabel('Stop')
+                            .setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder()
+                            .setCustomId('queue_view')
+                            .setEmoji('📋')
+                            .setLabel('Queue')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
                 
-                // Success embed
                 const embed = new EmbedBuilder()
-                    .setTitle('🎵 Now Playing')
+                    .setTitle(queue.songs.length === 1 && !queue.isPlaying ? '🎵 Now Playing' : '📋 Added to Queue')
                     .setDescription(`**[${title}](${videoUrl})**\n🎤 ${author}`)
                     .setColor('#FF69B4')
                     .setThumbnail(thumbnail)
                     .addFields([
                         { name: '⏱️ Duration', value: duration, inline: true },
                         { name: '🎧 Requested by', value: interaction.user.toString(), inline: true },
-                        { name: '🔍 Search Query', value: `"${query}"`, inline: true }
+                        { name: '📋 Position in Queue', value: `${queue.songs.length}`, inline: true }
                     ])
-                    .setFooter({ 
-                        text: 'VibyMusic • Simple & Reliable ✨',
-                        iconURL: interaction.client.user.displayAvatarURL()
-                    })
+                    .setFooter({ text: 'VibyMusic • Simple & Reliable ✨' })
                     .setTimestamp();
                 
-                await interaction.editReply({ embeds: [embed] });
+                return await interaction.editReply({ embeds: [embed], components: [row] });
                 
-                // Handle player events
-                player.on(AudioPlayerStatus.Playing, () => {
-                    console.log(`🎵 Now playing: ${title}`.cyan);
-                });
-                
-                player.on(AudioPlayerStatus.Idle, () => {
-                    connection.destroy();
-                    console.log('🎵 Playback finished'.blue);
-                });
-                
-                player.on('error', error => {
-                    console.error('❌ Audio player error:', error.message);
-                    connection.destroy();
-                });
-                
-            } catch (searchError) {
-                console.error('Search/Play error:', searchError);
-                
-                if (searchError.message.includes('Video unavailable')) {
-                    return await interaction.editReply({
-                        content: '❌ This video is unavailable or private. Try a different search!'
-                    });
-                }
-                
-                if (searchError.message.includes('age-restricted')) {
-                    return await interaction.editReply({
-                        content: '❌ This video is age-restricted. Try a different song!'
-                    });
-                }
-                
+            } catch (error) {
+                console.error('Play error:', error);
                 return await interaction.editReply({
-                    content: `❌ Failed to play "${query}". This might be due to:\n\n🔧 **YouTube restrictions**\n🔧 **Copyright issues**\n🔧 **Network problems**\n\n✅ **Try a different song or YouTube URL**`
+                    content: '❌ Failed to play the song. Try a different search or YouTube URL!'
                 });
             }
             
         } catch (error) {
             console.error('Command error:', error);
-            
             try {
-                if (interaction.deferred) {
-                    await interaction.editReply({
-                        content: '❌ Something went wrong! Please try again.'
-                    });
-                } else {
-                    await interaction.reply({
-                        content: '❌ Something went wrong! Please try again.',
-                        ephemeral: true
-                    });
-                }
-            } catch (replyError) {
-                console.error('Failed to send error reply:', replyError);
-            }
+                await interaction.editReply({ content: '❌ Something went wrong!' });
+            } catch {}
         }
     }
 };
+
+// Helper function to play next song
+async function playNextSong(queue, guildId) {
+    if (queue.songs.length === 0) {
+        queue.isPlaying = false;
+        queue.currentSong = null;
+        return;
+    }
+    
+    const song = queue.songs.shift();
+    queue.currentSong = song;
+    queue.isPlaying = true;
+    
+    try {
+        const resource = createAudioResource(ytdl(song.url, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25
+        }));
+        
+        queue.player.play(resource);
+        console.log(`🎵 Now playing: ${song.title}`.cyan);
+        
+        // Send now playing message
+        if (queue.textChannel) {
+            const embed = new EmbedBuilder()
+                .setTitle('🎵 Now Playing')
+                .setDescription(`**[${song.title}](${song.url})**\n🎤 ${song.author}`)
+                .setColor('#FF69B4')
+                .setThumbnail(song.thumbnail)
+                .setFooter({ text: `Requested by ${song.requester.username}` });
+            
+            queue.textChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+        
+    } catch (error) {
+        console.error('Error playing song:', error);
+        if (queue.songs.length > 0) {
+            playNextSong(queue, guildId);
+        }
+    }
+}
+
+// Export the queues map for other commands
+module.exports.queues = queues;
