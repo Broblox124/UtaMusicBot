@@ -1,5 +1,7 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { useMainPlayer } = require('discord-player');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const ytdl = require('ytdl-core');
+const yts = require('yt-search');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -16,7 +18,6 @@ module.exports = {
             // IMMEDIATELY defer to prevent timeout
             await interaction.deferReply();
             
-            const player = useMainPlayer();
             const query = interaction.options.getString('song');
             const voiceChannel = interaction.member?.voice?.channel;
             
@@ -35,138 +36,112 @@ module.exports = {
             }
             
             try {
-                console.log(`🔍 Searching for: "${query}"`);
+                let videoInfo;
+                let searchResult;
                 
-                // Enhanced search with multiple fallbacks
-                const searchResult = await player.search(query, {
-                    requestedBy: interaction.user,
-                    searchEngine: 'youtubeSearch', // Use YouTube search specifically
-                    fallbackSearchEngine: 'youtube'
-                });
-                
-                // If first search fails, try with different engines
-                if (!searchResult || !searchResult.tracks?.length) {
-                    console.log('First search failed, trying alternative...');
+                // Check if it's already a YouTube URL
+                if (ytdl.validateURL(query)) {
+                    console.log('Direct YouTube URL provided');
+                    videoInfo = await ytdl.getBasicInfo(query);
+                } else {
+                    console.log(`🔍 Searching YouTube for: "${query}"`);
                     
-                    // Try with auto search engine
-                    const fallbackResult = await player.search(query, {
-                        requestedBy: interaction.user,
-                        searchEngine: 'auto'
-                    });
+                    // Search YouTube directly
+                    searchResult = await yts(query);
                     
-                    if (!fallbackResult || !fallbackResult.tracks?.length) {
-                        // Final attempt with direct YouTube URL search
-                        const youtubeQuery = `ytsearch:${query}`;
-                        const finalResult = await player.search(youtubeQuery, {
-                            requestedBy: interaction.user
+                    if (!searchResult || !searchResult.videos || searchResult.videos.length === 0) {
+                        return await interaction.editReply({
+                            content: `❌ No results found for "${query}". Try:\n\n✅ **Different keywords**\n✅ **Add artist name**\n✅ **Use a YouTube URL directly**\n✅ **Try popular songs like "bohemian rhapsody" or "imagine dragons"**`
                         });
-                        
-                        if (!finalResult || !finalResult.tracks?.length) {
-                            return await interaction.editReply({
-                                content: `❌ No results found for "${query}". Try:\n\n✅ **Different spelling:** "despacito" instead of "despasito"\n✅ **Add artist:** "despacito luis fonsi"\n✅ **Use YouTube URL:** Paste direct link\n✅ **Popular songs:** Try "shape of you" or "bad guy"`
-                            });
-                        }
-                        
-                        Object.assign(searchResult, finalResult);
-                    } else {
-                        Object.assign(searchResult, fallbackResult);
                     }
+                    
+                    // Get the first video from search results
+                    const firstVideo = searchResult.videos[0];
+                    console.log(`✅ Found: ${firstVideo.title} by ${firstVideo.author.name}`);
+                    
+                    // Get detailed info for the first result
+                    videoInfo = await ytdl.getBasicInfo(firstVideo.url);
                 }
                 
-                console.log(`✅ Found ${searchResult.tracks.length} tracks`);
+                const videoDetails = videoInfo.videoDetails;
+                const title = videoDetails.title;
+                const author = videoDetails.author.name;
+                const duration = new Date(parseInt(videoDetails.lengthSeconds) * 1000).toISOString().substr(11, 8);
+                const thumbnail = videoDetails.thumbnails[0]?.url;
+                const videoUrl = videoDetails.video_url;
                 
-                // Play the first track
-                const { track } = await player.play(voiceChannel, searchResult, {
-                    requestedBy: interaction.user,
-                    nodeOptions: {
-                        metadata: {
-                            channel: interaction.channel,
-                            requestedBy: interaction.user
-                        },
-                        volume: 80,
-                        leaveOnEmpty: true,
-                        leaveOnEmptyCooldown: 300000,
-                        leaveOnEnd: true,
-                        leaveOnEndCooldown: 300000
-                    }
+                // Join voice channel
+                const connection = joinVoiceChannel({
+                    channelId: voiceChannel.id,
+                    guildId: interaction.guild.id,
+                    adapterCreator: interaction.guild.voiceAdapterCreator,
                 });
                 
-                // Create control buttons
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('pause_resume')
-                            .setEmoji('⏸️')
-                            .setLabel('Pause')
-                            .setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder()
-                            .setCustomId('skip')
-                            .setEmoji('⏭️')
-                            .setLabel('Skip')
-                            .setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder()
-                            .setCustomId('stop')
-                            .setEmoji('⏹️')
-                            .setLabel('Stop')
-                            .setStyle(ButtonStyle.Danger),
-                        new ButtonBuilder()
-                            .setCustomId('shuffle')
-                            .setEmoji('🔀')
-                            .setLabel('Shuffle')
-                            .setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder()
-                            .setCustomId('repeat')
-                            .setEmoji('🔁')
-                            .setLabel('Repeat')
-                            .setStyle(ButtonStyle.Secondary)
-                    );
+                // Create audio player
+                const player = createAudioPlayer();
+                
+                // Create audio resource
+                const resource = createAudioResource(ytdl(videoUrl, {
+                    filter: 'audioonly',
+                    quality: 'highestaudio',
+                    highWaterMark: 1 << 25
+                }));
+                
+                // Play the audio
+                player.play(resource);
+                connection.subscribe(player);
                 
                 // Success embed
                 const embed = new EmbedBuilder()
                     .setTitle('🎵 Now Playing')
-                    .setDescription(`**[${track.title}](${track.url})**\n🎤 ${track.author}`)
+                    .setDescription(`**[${title}](${videoUrl})**\n🎤 ${author}`)
                     .setColor('#FF69B4')
-                    .setThumbnail(track.thumbnail || 'https://i.imgur.com/4M34hi2.png')
+                    .setThumbnail(thumbnail)
                     .addFields([
-                        { name: '⏱️ Duration', value: track.duration || 'Unknown', inline: true },
+                        { name: '⏱️ Duration', value: duration, inline: true },
                         { name: '🎧 Requested by', value: interaction.user.toString(), inline: true },
-                        { name: '📻 Source', value: track.source || 'YouTube', inline: true }
+                        { name: '🔍 Search Query', value: `"${query}"`, inline: true }
                     ])
                     .setFooter({ 
-                        text: 'VibyMusic • Enjoy the vibes! ✨',
+                        text: 'VibyMusic • Simple & Reliable ✨',
                         iconURL: interaction.client.user.displayAvatarURL()
                     })
                     .setTimestamp();
                 
-                return await interaction.editReply({ 
-                    embeds: [embed],
-                    components: [row]
+                await interaction.editReply({ embeds: [embed] });
+                
+                // Handle player events
+                player.on(AudioPlayerStatus.Playing, () => {
+                    console.log(`🎵 Now playing: ${title}`.cyan);
                 });
                 
-            } catch (playError) {
-                console.error('Play error details:', playError);
+                player.on(AudioPlayerStatus.Idle, () => {
+                    connection.destroy();
+                    console.log('🎵 Playback finished'.blue);
+                });
                 
-                // Handle specific search/play errors
-                if (playError.message.includes('Sign in to confirm')) {
+                player.on('error', error => {
+                    console.error('❌ Audio player error:', error.message);
+                    connection.destroy();
+                });
+                
+            } catch (searchError) {
+                console.error('Search/Play error:', searchError);
+                
+                if (searchError.message.includes('Video unavailable')) {
                     return await interaction.editReply({
-                        content: '❌ YouTube is blocking requests. Try:\n\n✅ **Different search terms**\n✅ **Wait 30 seconds and try again**\n✅ **Use a YouTube URL directly**'
+                        content: '❌ This video is unavailable or private. Try a different search!'
                     });
                 }
                 
-                if (playError.message.includes('Video unavailable')) {
+                if (searchError.message.includes('age-restricted')) {
                     return await interaction.editReply({
-                        content: '❌ That video is unavailable. Try a different search!'
-                    });
-                }
-                
-                if (playError.message.includes('No extractors')) {
-                    return await interaction.editReply({
-                        content: '❌ Music extractors are loading. Try again in 30 seconds!'
+                        content: '❌ This video is age-restricted. Try a different song!'
                     });
                 }
                 
                 return await interaction.editReply({
-                    content: `❌ Failed to play "${query}". Try:\n\n✅ **Check spelling:** "despacito" not "despasito"\n✅ **Add artist name:** "despacito luis fonsi"\n✅ **Try popular songs:** "shape of you", "blinding lights"\n✅ **Use YouTube URL** for guaranteed results`
+                    content: `❌ Failed to play "${query}". This might be due to:\n\n🔧 **YouTube restrictions**\n🔧 **Copyright issues**\n🔧 **Network problems**\n\n✅ **Try a different song or YouTube URL**`
                 });
             }
             
@@ -176,11 +151,11 @@ module.exports = {
             try {
                 if (interaction.deferred) {
                     await interaction.editReply({
-                        content: '❌ Something went wrong! Try again in a few seconds.'
+                        content: '❌ Something went wrong! Please try again.'
                     });
                 } else {
                     await interaction.reply({
-                        content: '❌ Something went wrong! Try again in a few seconds.',
+                        content: '❌ Something went wrong! Please try again.',
                         ephemeral: true
                     });
                 }
