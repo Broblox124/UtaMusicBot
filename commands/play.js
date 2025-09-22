@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { useMainPlayer } = require('discord-player');
 
 module.exports = {
@@ -7,7 +7,7 @@ module.exports = {
         .setDescription('🎵 Play a song and start the vibe!')
         .addStringOption(option =>
             option.setName('song')
-                .setDescription('Song name or URL')
+                .setDescription('Song name, artist, or YouTube URL')
                 .setRequired(true)
         ),
         
@@ -35,74 +35,157 @@ module.exports = {
             }
             
             try {
-                // Simple play method
-                const { track } = await player.play(voiceChannel, query, {
+                console.log(`🔍 Searching for: "${query}"`);
+                
+                // Enhanced search with multiple fallbacks
+                const searchResult = await player.search(query, {
+                    requestedBy: interaction.user,
+                    searchEngine: 'youtubeSearch', // Use YouTube search specifically
+                    fallbackSearchEngine: 'youtube'
+                });
+                
+                // If first search fails, try with different engines
+                if (!searchResult || !searchResult.tracks?.length) {
+                    console.log('First search failed, trying alternative...');
+                    
+                    // Try with auto search engine
+                    const fallbackResult = await player.search(query, {
+                        requestedBy: interaction.user,
+                        searchEngine: 'auto'
+                    });
+                    
+                    if (!fallbackResult || !fallbackResult.tracks?.length) {
+                        // Final attempt with direct YouTube URL search
+                        const youtubeQuery = `ytsearch:${query}`;
+                        const finalResult = await player.search(youtubeQuery, {
+                            requestedBy: interaction.user
+                        });
+                        
+                        if (!finalResult || !finalResult.tracks?.length) {
+                            return await interaction.editReply({
+                                content: `❌ No results found for "${query}". Try:\n\n✅ **Different spelling:** "despacito" instead of "despasito"\n✅ **Add artist:** "despacito luis fonsi"\n✅ **Use YouTube URL:** Paste direct link\n✅ **Popular songs:** Try "shape of you" or "bad guy"`
+                            });
+                        }
+                        
+                        Object.assign(searchResult, finalResult);
+                    } else {
+                        Object.assign(searchResult, fallbackResult);
+                    }
+                }
+                
+                console.log(`✅ Found ${searchResult.tracks.length} tracks`);
+                
+                // Play the first track
+                const { track } = await player.play(voiceChannel, searchResult, {
                     requestedBy: interaction.user,
                     nodeOptions: {
                         metadata: {
                             channel: interaction.channel,
                             requestedBy: interaction.user
-                        }
+                        },
+                        volume: 80,
+                        leaveOnEmpty: true,
+                        leaveOnEmptyCooldown: 300000,
+                        leaveOnEnd: true,
+                        leaveOnEndCooldown: 300000
                     }
                 });
                 
-                // Simple success message
+                // Create control buttons
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('pause_resume')
+                            .setEmoji('⏸️')
+                            .setLabel('Pause')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId('skip')
+                            .setEmoji('⏭️')
+                            .setLabel('Skip')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId('stop')
+                            .setEmoji('⏹️')
+                            .setLabel('Stop')
+                            .setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder()
+                            .setCustomId('shuffle')
+                            .setEmoji('🔀')
+                            .setLabel('Shuffle')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId('repeat')
+                            .setEmoji('🔁')
+                            .setLabel('Repeat')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                
+                // Success embed
                 const embed = new EmbedBuilder()
                     .setTitle('🎵 Now Playing')
-                    .setDescription(`**${track.title}**\n🎤 ${track.author}`)
+                    .setDescription(`**[${track.title}](${track.url})**\n🎤 ${track.author}`)
                     .setColor('#FF69B4')
-                    .setThumbnail(track.thumbnail || null)
+                    .setThumbnail(track.thumbnail || 'https://i.imgur.com/4M34hi2.png')
                     .addFields([
                         { name: '⏱️ Duration', value: track.duration || 'Unknown', inline: true },
-                        { name: '🎧 Requested by', value: interaction.user.toString(), inline: true }
+                        { name: '🎧 Requested by', value: interaction.user.toString(), inline: true },
+                        { name: '📻 Source', value: track.source || 'YouTube', inline: true }
                     ])
-                    .setFooter({ text: 'VibyMusic • Enjoy the vibes! ✨' });
+                    .setFooter({ 
+                        text: 'VibyMusic • Enjoy the vibes! ✨',
+                        iconURL: interaction.client.user.displayAvatarURL()
+                    })
+                    .setTimestamp();
                 
-                return await interaction.editReply({ embeds: [embed] });
+                return await interaction.editReply({ 
+                    embeds: [embed],
+                    components: [row]
+                });
                 
             } catch (playError) {
-                console.error('Play error:', playError.message);
+                console.error('Play error details:', playError);
                 
-                // Handle common errors
-                if (playError.message.includes('No results')) {
+                // Handle specific search/play errors
+                if (playError.message.includes('Sign in to confirm')) {
                     return await interaction.editReply({
-                        content: `❌ No results found for "${query}". Try a different search!`
+                        content: '❌ YouTube is blocking requests. Try:\n\n✅ **Different search terms**\n✅ **Wait 30 seconds and try again**\n✅ **Use a YouTube URL directly**'
                     });
                 }
                 
-                if (playError.message.includes('unavailable')) {
+                if (playError.message.includes('Video unavailable')) {
                     return await interaction.editReply({
-                        content: `❌ That video is unavailable. Try a different song!`
+                        content: '❌ That video is unavailable. Try a different search!'
+                    });
+                }
+                
+                if (playError.message.includes('No extractors')) {
+                    return await interaction.editReply({
+                        content: '❌ Music extractors are loading. Try again in 30 seconds!'
                     });
                 }
                 
                 return await interaction.editReply({
-                    content: `❌ Failed to play "${query}". Try a different search or try again later.`
+                    content: `❌ Failed to play "${query}". Try:\n\n✅ **Check spelling:** "despacito" not "despasito"\n✅ **Add artist name:** "despacito luis fonsi"\n✅ **Try popular songs:** "shape of you", "blinding lights"\n✅ **Use YouTube URL** for guaranteed results`
                 });
             }
             
         } catch (error) {
-            console.error('Command error:', error.message);
-            
-            // Handle timeout errors
-            if (error.code === 10062) {
-                console.log('Interaction timed out');
-                return;
-            }
+            console.error('Command error:', error);
             
             try {
                 if (interaction.deferred) {
                     await interaction.editReply({
-                        content: '❌ Something went wrong! Please try again.'
+                        content: '❌ Something went wrong! Try again in a few seconds.'
                     });
                 } else {
                     await interaction.reply({
-                        content: '❌ Something went wrong! Please try again.',
+                        content: '❌ Something went wrong! Try again in a few seconds.',
                         ephemeral: true
                     });
                 }
             } catch (replyError) {
-                console.error('Failed to send error reply:', replyError.message);
+                console.error('Failed to send error reply:', replyError);
             }
         }
     }
