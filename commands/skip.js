@@ -1,5 +1,4 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { queues } = require('./play.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -7,7 +6,7 @@ module.exports = {
         .setDescription('⏭️ Skip the current song'),
         
     async execute(interaction) {
-        const queue = queues.get(interaction.guild.id);
+        const queue = global.musicQueues?.get(interaction.guild.id);
         
         if (!queue || !queue.isPlaying) {
             return interaction.reply({ content: '❌ Nothing is currently playing!', ephemeral: true });
@@ -19,7 +18,7 @@ module.exports = {
         }
         
         const skippedSong = queue.currentSong?.title || 'Unknown';
-        queue.player.stop(); // This triggers the 'idle' event which plays next song
+        queue.player.stop();
         
         await interaction.reply({ content: `⏭️ Skipped **${skippedSong}**!` });
     }
