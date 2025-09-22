@@ -1,6 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { AudioPlayerStatus } = require('@discordjs/voice');
-const { queues } = require('./play.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -8,7 +7,7 @@ module.exports = {
         .setDescription('▶️ Resume the paused song'),
         
     async execute(interaction) {
-        const queue = queues.get(interaction.guild.id);
+        const queue = global.musicQueues?.get(interaction.guild.id);
         
         if (!queue || !queue.currentSong) {
             return interaction.reply({ content: '❌ Nothing is currently paused!', ephemeral: true });
