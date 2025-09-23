@@ -1,4 +1,3 @@
-// Remove the dotenv line since we're using Render environment variables
 const { Client, GatewayIntentBits, Collection, EmbedBuilder } = require('discord.js');
 const { Manager } = require('erela.js');
 const express = require('express');
@@ -6,13 +5,13 @@ const colors = require('colors');
 const path = require('path');
 const fs = require('fs');
 
-// Initialize Discord Client
+// Initialize Discord Client with MINIMAL intents
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent  // This requires MESSAGE CONTENT INTENT enabled
     ]
 });
 
@@ -45,7 +44,7 @@ app.get('/health', (req, res) => {
 // Start Express Server (Required for Render)
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Express server running on port ${PORT}`.blue);
-    console.log(`🔗 Health check: http://localhost:${PORT}/health`.blue);
+    console.log(`🔗 Health check available at /health`.blue);
 });
 
 // Initialize Lavalink Manager
@@ -56,6 +55,7 @@ client.manager = new Manager({
             port: 443,
             password: 'https://dsc.gg/ajidevserver',
             secure: true,
+            identifier: 'main-node'
         }
     ],
     send(id, payload) {
@@ -64,10 +64,10 @@ client.manager = new Manager({
     },
 })
 .on('nodeConnect', node => {
-    console.log(`✅ Lavalink node ${node.options.identifier} connected`.green);
+    console.log(`✅ Lavalink node "${node.options.identifier}" connected`.green);
 })
 .on('nodeError', (node, error) => {
-    console.log(`❌ Lavalink node ${node.options.identifier} error: ${error.message}`.red);
+    console.log(`❌ Lavalink node "${node.options.identifier}" error: ${error.message}`.red);
 })
 .on('trackStart', (player, track) => {
     const channel = client.channels.cache.get(player.textChannel);
@@ -85,18 +85,18 @@ client.manager = new Manager({
             .setFooter({ text: 'VibyMusic • Professional Music Experience' })
             .setTimestamp();
         
-        channel.send({ embeds: [embed] });
+        channel.send({ embeds: [embed] }).catch(() => {});
     }
 })
 .on('queueEnd', player => {
     const channel = client.channels.cache.get(player.textChannel);
     if (channel) {
-        channel.send('🎵 Queue ended. Thanks for listening!');
+        channel.send('🎵 Queue ended. Thanks for listening!').catch(() => {});
     }
     player.destroy();
 });
 
-// Load Commands
+// Load Commands Function
 function loadCommands() {
     const commandsPath = path.join(__dirname, 'commands');
     
@@ -107,6 +107,7 @@ function loadCommands() {
     }
     
     const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+    console.log(`📁 Found ${commandFiles.length} command files`.cyan);
     
     for (const file of commandFiles) {
         try {
@@ -126,11 +127,13 @@ function loadCommands() {
 
 // Bot Ready Event
 client.once('ready', async () => {
-    console.log(`🚀 Bot logged in as ${client.user.tag}`.rainbow);
+    console.log(`🚀 Bot logged in as ${client.user.tag}!`.rainbow);
     console.log(`🎧 Connected to ${client.guilds.cache.size} servers`.cyan);
+    console.log(`👥 Serving ${client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0)} users`.cyan);
     
     // Initialize Lavalink
     client.manager.init(client.user.id);
+    console.log('🎵 Lavalink manager initialized'.blue);
     
     // Load Commands
     loadCommands();
@@ -141,7 +144,7 @@ client.once('ready', async () => {
         status: 'online',
     });
     
-    console.log('✨ VibyMusic is ready!'.magenta);
+    console.log('✨ VibyMusic is fully ready and operational!'.magenta);
 });
 
 // Voice State Update (Required for Lavalink)
@@ -149,9 +152,10 @@ client.on('raw', d => client.manager.updateVoiceState(d));
 
 // Message Handler for Commands
 client.on('messageCreate', async (message) => {
+    // Ignore bots and DMs
     if (message.author.bot || !message.guild) return;
     
-    const prefix = '>'; // You can change this
+    const prefix = '>';
     if (!message.content.startsWith(prefix)) return;
     
     const args = message.content.slice(prefix.length).trim().split(/ +/);
@@ -161,10 +165,11 @@ client.on('messageCreate', async (message) => {
     if (!command) return;
     
     try {
+        console.log(`🎵 ${message.author.tag} used >${commandName} in ${message.guild.name}`.cyan);
         await command.execute(message, args, client);
     } catch (error) {
-        console.error(`❌ Command error: ${error.message}`.red);
-        message.reply('❌ An error occurred while executing this command!');
+        console.error(`❌ Command error in >${commandName}: ${error.message}`.red);
+        message.reply('❌ An error occurred while executing this command!').catch(() => {});
     }
 });
 
@@ -180,17 +185,33 @@ function formatTime(ms) {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-// Error Handling
-process.on('unhandledRejection', (reason, p) => {
-    console.log('🚨 Unhandled Rejection:'.red, reason, p);
+// Enhanced Error Handling
+process.on('unhandledRejection', (reason, promise) => {
+    console.log('🚨 Unhandled Rejection at:'.red, promise, 'reason:', reason);
 });
 
-process.on('uncaughtException', (err, origin) => {
-    console.log('🚨 Uncaught Exception:'.red, err, origin);
+process.on('uncaughtException', (err) => {
+    console.log('🚨 Uncaught Exception:'.red, err);
+    process.exit(1);
 });
 
-// Login
+// Graceful Shutdown
+process.on('SIGINT', () => {
+    console.log('🛑 Received SIGINT, shutting down gracefully...'.yellow);
+    client.destroy();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('🛑 Received SIGTERM, shutting down gracefully...'.yellow);
+    client.destroy();
+    process.exit(0);
+});
+
+// Login to Discord
+console.log('🔐 Attempting to login to Discord...'.blue);
 client.login(process.env.DISCORD_TOKEN).catch(error => {
-    console.error('❌ Failed to login:', error);
+    console.error('❌ Failed to login to Discord:'.red, error.message);
+    console.error('🔧 Check your DISCORD_TOKEN in Render environment variables'.red);
     process.exit(1);
 });
