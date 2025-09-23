@@ -3,7 +3,6 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Collection, ActivityType, REST, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const colors = require('colors');
 
 // Initialize Discord client
 const client = new Client({
@@ -16,66 +15,83 @@ const client = new Client({
 
 client.commands = new Collection();
 
-// Auto-deploy commands function
-async function deployCommands() {
-    const commands = [];
+// FIXED command loading with better error handling
+async function loadCommands() {
     const commandsPath = path.join(__dirname, 'commands');
     
-    try {
-        if (fs.existsSync(commandsPath)) {
-            const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+    // Check if commands folder exists
+    if (!fs.existsSync(commandsPath)) {
+        console.log('❌ Commands folder does not exist! Creating it...'.red);
+        fs.mkdirSync(commandsPath);
+        console.log('✅ Commands folder created'.green);
+        return [];
+    }
+    
+    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+    
+    if (commandFiles.length === 0) {
+        console.log('⚠️ No .js files found in commands folder'.yellow);
+        return [];
+    }
+    
+    const commands = [];
+    
+    for (const file of commandFiles) {
+        const filePath = path.join(commandsPath, file);
+        
+        try {
+            // Clear require cache
+            delete require.cache[require.resolve(filePath)];
             
-            for (const file of commandFiles) {
-                const filePath = path.join(commandsPath, file);
-                try {
-                    delete require.cache[require.resolve(filePath)]; // Clear cache
-                    const command = require(filePath);
-                    if ('data' in command && 'execute' in command) {
-                        commands.push(command.data.toJSON());
-                        console.log(`✅ Loaded: ${command.data.name}`.green);
-                    }
-                } catch (error) {
-                    console.log(`❌ Failed: ${file} - ${error.message}`.red);
-                }
+            const command = require(filePath);
+            
+            if (!command.data || !command.execute) {
+                console.log(`❌ ${file}: Missing 'data' or 'execute' property`.red);
+                continue;
             }
+            
+            if (typeof command.data.toJSON !== 'function') {
+                console.log(`❌ ${file}: Invalid command data structure`.red);
+                continue;
+            }
+            
+            // Successfully loaded
+            client.commands.set(command.data.name, command);
+            commands.push(command.data.toJSON());
+            console.log(`✅ Loaded: ${command.data.name}`.green);
+            
+        } catch (error) {
+            console.log(`❌ Failed to load ${file}: ${error.message}`.red);
+            console.log(`   Error details: ${error.stack}`.red);
         }
+    }
+    
+    return commands;
+}
+
+// Deploy commands function
+async function deployCommands() {
+    try {
+        const commands = await loadCommands();
         
         if (commands.length === 0) {
-            console.log('⚠️ No commands found in commands folder'.yellow);
+            console.log('⚠️ No commands to deploy'.yellow);
             return;
         }
         
-        // Deploy to Discord
         const rest = new REST().setToken(process.env.DISCORD_TOKEN);
-        await rest.put(
+        
+        console.log(`🚀 Deploying ${commands.length} commands...`.blue);
+        
+        const data = await rest.put(
             Routes.applicationCommands(process.env.CLIENT_ID),
             { body: commands }
         );
         
-        console.log(`✅ Deployed ${commands.length} commands!`.green);
+        console.log(`✅ Successfully deployed ${data.length} commands!`.green);
         
     } catch (error) {
-        console.error('❌ Command deployment failed:', error.message);
-    }
-}
-
-// Load existing commands
-const commandsPath = path.join(__dirname, 'commands');
-if (fs.existsSync(commandsPath)) {
-    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-    
-    for (const file of commandFiles) {
-        const filePath = path.join(commandsPath, file);
-        try {
-            delete require.cache[require.resolve(filePath)]; // Clear cache
-            const command = require(filePath);
-            if ('data' in command && 'execute' in command) {
-                client.commands.set(command.data.name, command);
-                console.log(`🎵 Command loaded: ${command.data.name}`.cyan);
-            }
-        } catch (error) {
-            console.error(`❌ Error loading ${file}:`, error.message);
-        }
+        console.error('❌ Command deployment failed:'.red, error.message);
     }
 }
 
@@ -84,36 +100,33 @@ client.once('ready', async () => {
     console.log(`🚀 ${client.user.tag} is online!`.rainbow);
     console.log(`🎧 Connected to ${client.guilds.cache.size} servers`.cyan);
     
-    // Deploy commands
-    setTimeout(async () => {
-        await deployCommands();
-    }, 2000);
+    // Deploy commands after a delay
+    setTimeout(deployCommands, 3000);
     
-    // Set activity
-    client.user.setActivity('🎵 /play your favorite songs!', { type: ActivityType.Listening });
+    client.user.setActivity('🎵 /play for music!', { type: ActivityType.Listening });
     
-    console.log('✨ VibyMusic Bot is ready!'.magenta);
-    console.log('🎶 Try /play with any song name!'.blue);
+    console.log('✨ Bot is ready!'.magenta);
 });
 
-// Interaction handler
+// Interaction handler with better error handling
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const command = client.commands.get(interaction.commandName);
+    
     if (!command) {
         console.log(`❌ Command not found: ${interaction.commandName}`.red);
         return;
     }
 
     try {
-        console.log(`🎵 ${interaction.user.tag} used /${interaction.commandName} in ${interaction.guild?.name}`.cyan);
+        console.log(`🎵 ${interaction.user.tag} used /${interaction.commandName}`.cyan);
         await command.execute(interaction);
     } catch (error) {
-        console.error(`❌ Command execution error for ${interaction.commandName}:`, error.message);
+        console.error(`❌ Command error for ${interaction.commandName}:`.red, error.message);
         
         const reply = { 
-            content: '❌ Something went wrong while executing this command!', 
+            content: '❌ An error occurred while executing this command!', 
             ephemeral: true 
         };
         
@@ -124,7 +137,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply(reply);
             }
         } catch (replyError) {
-            console.error('❌ Failed to send error message:', replyError.message);
+            console.error('❌ Failed to send error reply:'.red, replyError.message);
         }
     }
 });
@@ -139,38 +152,23 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
 });
 
-// Login to Discord
+// Login function
 async function startBot() {
     try {
         console.log('🔐 Logging into Discord...'.blue);
         await client.login(process.env.DISCORD_TOKEN);
-        console.log('🎉 Successfully connected to Discord!'.green);
     } catch (error) {
-        console.error('❌ Failed to login:', error.message);
+        console.error('❌ Failed to login:'.red, error.message);
         process.exit(1);
     }
 }
 
-// Keep alive server for Render
+// Keep-alive server for Render
 const PORT = process.env.PORT || 3000;
-const http = require('http');
-
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(`
-        <html>
-            <head><title>VibyMusic Bot</title></head>
-            <body style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-                <h1>🎵 VibyMusic Bot is Online!</h1>
-                <p>✅ Bot Status: Running</p>
-                <p>🎶 Ready to play your favorite music!</p>
-                <p>💖 Made with love for Discord music lovers</p>
-            </body>
-        </html>
-    `);
-});
-
-server.listen(PORT, () => {
+require('http').createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('VibyMusic Bot Status: ONLINE 🎵');
+}).listen(PORT, () => {
     console.log(`🌐 Keep-alive server running on port ${PORT}`.blue);
     startBot();
 });
