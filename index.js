@@ -1,4 +1,4 @@
-require('dotenv').config();
+// Remove the dotenv line since we're using Render environment variables
 const { Client, GatewayIntentBits, Collection, EmbedBuilder } = require('discord.js');
 const { Manager } = require('erela.js');
 const express = require('express');
@@ -26,9 +26,10 @@ const PORT = process.env.PORT || 10000;
 // Express Routes for Render Health Check
 app.get('/', (req, res) => {
     res.json({ 
-        status: 'VibyMusic Bot Online', 
-        uptime: process.uptime(),
-        guilds: client.guilds.cache.size || 0
+        status: 'VibyMusic Bot Online! 🎵', 
+        uptime: Math.floor(process.uptime()),
+        guilds: client.guilds.cache.size || 0,
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -36,16 +37,18 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'healthy',
         bot: client.user ? client.user.tag : 'offline',
-        guilds: client.guilds.cache.size
+        guilds: client.guilds.cache.size,
+        uptime: Math.floor(process.uptime())
     });
 });
 
-// Start Express Server
+// Start Express Server (Required for Render)
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Express server running on port ${PORT}`.blue);
+    console.log(`🔗 Health check: http://localhost:${PORT}/health`.blue);
 });
 
-// Initialize Lavalink Manager (Using Public Lavalink)
+// Initialize Lavalink Manager
 client.manager = new Manager({
     nodes: [
         {
@@ -134,7 +137,7 @@ client.once('ready', async () => {
     
     // Set Activity
     client.user.setPresence({
-        activities: [{ name: '🎵 Music for everyone!', type: 2 }], // Type 2 = LISTENING
+        activities: [{ name: '🎵 >play for music!', type: 2 }], // Type 2 = LISTENING
         status: 'online',
     });
     
@@ -148,7 +151,7 @@ client.on('raw', d => client.manager.updateVoiceState(d));
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     
-    const prefix = '>'; // You can make this dynamic
+    const prefix = '>'; // You can change this
     if (!message.content.startsWith(prefix)) return;
     
     const args = message.content.slice(prefix.length).trim().split(/ +/);
